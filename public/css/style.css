@@ -26,6 +26,83 @@ body {
   color: var(--text);
   min-height: 100vh;
   line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* === Animated Background === */
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background:
+    radial-gradient(circle at 20% 50%, rgba(108, 92, 231, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(253, 121, 168, 0.12) 0%, transparent 50%),
+    radial-gradient(circle at 50% 80%, rgba(0, 206, 209, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 70% 60%, rgba(162, 155, 254, 0.08) 0%, transparent 40%);
+  animation: bgDrift 20s ease-in-out infinite alternate;
+  z-index: -2;
+  pointer-events: none;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background:
+    radial-gradient(circle at 60% 30%, rgba(253, 121, 168, 0.1) 0%, transparent 45%),
+    radial-gradient(circle at 30% 70%, rgba(0, 206, 209, 0.12) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(108, 92, 231, 0.1) 0%, transparent 45%);
+  animation: bgDrift2 25s ease-in-out infinite alternate;
+  z-index: -1;
+  pointer-events: none;
+}
+
+@keyframes bgDrift {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  25%  { transform: translate(2%, -3%) rotate(1deg); }
+  50%  { transform: translate(-1%, 2%) rotate(-0.5deg); }
+  75%  { transform: translate(3%, 1%) rotate(0.5deg); }
+  100% { transform: translate(-2%, -1%) rotate(-1deg); }
+}
+
+@keyframes bgDrift2 {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  33%  { transform: translate(-3%, 2%) rotate(-1deg); }
+  66%  { transform: translate(2%, -2%) rotate(0.5deg); }
+  100% { transform: translate(1%, 3%) rotate(-0.5deg); }
+}
+
+/* Floating orbs */
+.bg-orbs {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.bg-orbs span {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0;
+  animation: orbFloat linear infinite;
+}
+
+@keyframes orbFloat {
+  0%   { opacity: 0; transform: translateY(100vh) scale(0.5); }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-20vh) scale(1.2); }
 }
 
 .container {

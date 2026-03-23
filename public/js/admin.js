@@ -105,7 +105,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render category list
     categoryList.innerHTML = categories.map(cat => `
-      <div class="category-item" data-id="${cat.id}">
+      <div class="category-item" draggable="true" data-id="${cat.id}">
+        <div class="drag-handle" title="Drag to reorder">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+            <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+            <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+          </svg>
+        </div>
         <span class="category-item-name">${escapeHtml(cat.name)}</span>
         <div class="category-item-actions">
           <button class="btn btn-outline btn-sm" onclick="editCategory(${cat.id}, '${escapeHtml(cat.name).replace(/'/g, "\\'")}')">Edit</button>
@@ -113,6 +120,60 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
     `).join('');
+
+    setupCategoryDragAndDrop();
+  }
+
+  function setupCategoryDragAndDrop() {
+    const items = categoryList.querySelectorAll('.category-item');
+    let draggedItem = null;
+
+    items.forEach(item => {
+      item.addEventListener('dragstart', (e) => {
+        draggedItem = item;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        categoryList.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        draggedItem = null;
+      });
+
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (item !== draggedItem) item.classList.add('drag-over');
+      });
+
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over');
+      });
+
+      item.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        if (draggedItem && draggedItem !== item) {
+          const allItems = [...categoryList.querySelectorAll('.category-item')];
+          const fromIndex = allItems.indexOf(draggedItem);
+          const toIndex = allItems.indexOf(item);
+          if (fromIndex < toIndex) {
+            item.after(draggedItem);
+          } else {
+            item.before(draggedItem);
+          }
+          const newOrder = [...categoryList.querySelectorAll('.category-item')]
+            .map(el => parseInt(el.dataset.id));
+          await fetch('/api/categories/reorder', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order: newOrder })
+          });
+          loadMenus(); // refresh menu list to reflect new category order
+        }
+      });
+    });
   }
 
   window.editCategory = async (id, currentName) => {

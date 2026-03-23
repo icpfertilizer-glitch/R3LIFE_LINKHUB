@@ -56,6 +56,15 @@ async function initDB() {
       UNIQUE(user_email, category_id)
     )
   `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_menu_permissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_email TEXT NOT NULL,
+      menu_id INTEGER NOT NULL,
+      FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE,
+      UNIQUE(user_email, menu_id)
+    )
+  `);
 }
 
 // --- Microsoft Entra ID (Azure AD) Setup ---
@@ -249,26 +258,47 @@ app.get('/api/auth', (req, res) => {
 
 // --- Category API (read: MS auth, write: admin) ---
 
-// Helper: get allowed category IDs for current user
-async function getAllowedCategories(req) {
+// Helper: get allowed IDs for current user
+async function getUserPermissions(req) {
   // Admin sees everything
-  if (req.session?.isAdmin) return null;
-  if (!req.session?.msUser) return null; // no MS user = no filtering
+  if (req.session?.isAdmin) return { all: true };
+  if (!req.session?.msUser) return { all: true }; // no MS user = no filtering
+
   const email = req.session.msUser.email;
-  const perms = await db.execute({ sql: 'SELECT category_id FROM user_permissions WHERE user_email = ?', args: [email] });
-  if (perms.rows.length === 0) return []; // no permissions set = see nothing
-  return perms.rows.map(r => r.category_id);
+  const catPerms = await db.execute({ sql: 'SELECT category_id FROM user_permissions WHERE user_email = ?', args: [email] });
+  const menuPerms = await db.execute({ sql: 'SELECT menu_id FROM user_menu_permissions WHERE user_email = ?', args: [email] });
+
+  // No permissions at all = see nothing
+  if (catPerms.rows.length === 0 && menuPerms.rows.length === 0) return { all: false, categoryIds: [], menuIds: [] };
+
+  return {
+    all: false,
+    categoryIds: catPerms.rows.map(r => r.category_id),
+    menuIds: menuPerms.rows.map(r => r.menu_id)
+  };
 }
 
 app.get('/api/categories', requireMsLogin, async (req, res) => {
-  const allowed = await getAllowedCategories(req);
-  if (allowed !== null) {
-    if (allowed.length === 0) return res.json([]);
-    const placeholders = allowed.map(() => '?').join(',');
-    const result = await db.execute({ sql: `SELECT * FROM categories WHERE id IN (${placeholders}) ORDER BY sort_order ASC, id ASC`, args: allowed });
+  const perms = await getUserPermissions(req);
+  if (perms.all) {
+    const result = await db.execute('SELECT * FROM categories ORDER BY sort_order ASC, id ASC');
     return res.json(result.rows);
   }
-  const result = await db.execute('SELECT * FROM categories ORDER BY sort_order ASC, id ASC');
+
+  if (perms.categoryIds.length === 0 && perms.menuIds.length === 0) return res.json([]);
+
+  // Get categories from direct category permissions + categories of permitted menus
+  const allIds = new Set(perms.categoryIds);
+  if (perms.menuIds.length > 0) {
+    const mp = perms.menuIds.map(() => '?').join(',');
+    const menuCats = await db.execute({ sql: `SELECT DISTINCT category_id FROM menus WHERE id IN (${mp}) AND category_id IS NOT NULL`, args: perms.menuIds });
+    menuCats.rows.forEach(r => allIds.add(r.category_id));
+  }
+
+  if (allIds.size === 0) return res.json([]);
+  const ids = [...allIds];
+  const placeholders = ids.map(() => '?').join(',');
+  const result = await db.execute({ sql: `SELECT * FROM categories WHERE id IN (${placeholders}) ORDER BY sort_order ASC, id ASC`, args: ids });
   res.json(result.rows);
 });
 
@@ -321,26 +351,40 @@ app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
 // --- Menu API (read: MS auth, write: admin) ---
 
 app.get('/api/menus', requireMsLogin, async (req, res) => {
-  const allowed = await getAllowedCategories(req);
-  if (allowed !== null) {
-    if (allowed.length === 0) return res.json([]);
-    const placeholders = allowed.map(() => '?').join(',');
-    const result = await db.execute({
-      sql: `SELECT menus.*, categories.name as category_name
-            FROM menus
-            LEFT JOIN categories ON menus.category_id = categories.id
-            WHERE menus.category_id IN (${placeholders})
-            ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC`,
-      args: allowed
-    });
+  const perms = await getUserPermissions(req);
+  if (perms.all) {
+    const result = await db.execute(`
+      SELECT menus.*, categories.name as category_name
+      FROM menus
+      LEFT JOIN categories ON menus.category_id = categories.id
+      ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC
+    `);
     return res.json(result.rows);
   }
-  const result = await db.execute(`
-    SELECT menus.*, categories.name as category_name
-    FROM menus
-    LEFT JOIN categories ON menus.category_id = categories.id
-    ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC
-  `);
+
+  if (perms.categoryIds.length === 0 && perms.menuIds.length === 0) return res.json([]);
+
+  // Build WHERE clause: category_id IN (...) OR menus.id IN (...)
+  const conditions = [];
+  const args = [];
+
+  if (perms.categoryIds.length > 0) {
+    conditions.push(`menus.category_id IN (${perms.categoryIds.map(() => '?').join(',')})`);
+    args.push(...perms.categoryIds);
+  }
+  if (perms.menuIds.length > 0) {
+    conditions.push(`menus.id IN (${perms.menuIds.map(() => '?').join(',')})`);
+    args.push(...perms.menuIds);
+  }
+
+  const result = await db.execute({
+    sql: `SELECT menus.*, categories.name as category_name
+          FROM menus
+          LEFT JOIN categories ON menus.category_id = categories.id
+          WHERE ${conditions.join(' OR ')}
+          ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC`,
+    args
+  });
   res.json(result.rows);
 });
 
@@ -407,11 +451,13 @@ app.delete('/api/menus/:id', requireAdmin, async (req, res) => {
 // Get all users with their permissions
 app.get('/api/users', requireAdmin, async (req, res) => {
   const users = await db.execute('SELECT * FROM users ORDER BY name ASC');
-  const permissions = await db.execute('SELECT * FROM user_permissions');
+  const catPerms = await db.execute('SELECT * FROM user_permissions');
+  const menuPerms = await db.execute('SELECT * FROM user_menu_permissions');
 
   const userList = users.rows.map(u => ({
     ...u,
-    permissions: permissions.rows.filter(p => p.user_email === u.email).map(p => p.category_id)
+    categoryPermissions: catPerms.rows.filter(p => p.user_email === u.email).map(p => p.category_id),
+    menuPermissions: menuPerms.rows.filter(p => p.user_email === u.email).map(p => p.menu_id)
   }));
   res.json(userList);
 });
@@ -419,19 +465,22 @@ app.get('/api/users', requireAdmin, async (req, res) => {
 // Set permissions for a user (replace all)
 app.put('/api/users/:email/permissions', requireAdmin, async (req, res) => {
   const email = decodeURIComponent(req.params.email);
-  const { category_ids } = req.body; // array of category IDs (empty = see all)
+  const { category_ids, menu_ids } = req.body;
 
-  if (!Array.isArray(category_ids)) return res.status(400).json({ error: 'category_ids must be an array' });
+  if (!Array.isArray(category_ids) || !Array.isArray(menu_ids)) {
+    return res.status(400).json({ error: 'category_ids and menu_ids must be arrays' });
+  }
 
-  // Delete existing permissions
+  // Replace category permissions
   await db.execute({ sql: 'DELETE FROM user_permissions WHERE user_email = ?', args: [email] });
-
-  // Insert new permissions
   for (const catId of category_ids) {
-    await db.execute({
-      sql: 'INSERT INTO user_permissions (user_email, category_id) VALUES (?, ?)',
-      args: [email, catId]
-    });
+    await db.execute({ sql: 'INSERT INTO user_permissions (user_email, category_id) VALUES (?, ?)', args: [email, catId] });
+  }
+
+  // Replace menu permissions
+  await db.execute({ sql: 'DELETE FROM user_menu_permissions WHERE user_email = ?', args: [email] });
+  for (const menuId of menu_ids) {
+    await db.execute({ sql: 'INSERT INTO user_menu_permissions (user_email, menu_id) VALUES (?, ?)', args: [email, menuId] });
   }
 
   res.json({ success: true });
@@ -441,6 +490,7 @@ app.put('/api/users/:email/permissions', requireAdmin, async (req, res) => {
 app.delete('/api/users/:email', requireAdmin, async (req, res) => {
   const email = decodeURIComponent(req.params.email);
   await db.execute({ sql: 'DELETE FROM user_permissions WHERE user_email = ?', args: [email] });
+  await db.execute({ sql: 'DELETE FROM user_menu_permissions WHERE user_email = ?', args: [email] });
   await db.execute({ sql: 'DELETE FROM users WHERE email = ?', args: [email] });
   res.json({ success: true });
 });

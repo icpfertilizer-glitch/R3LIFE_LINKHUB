@@ -673,6 +673,20 @@ body {
   gap: 8px;
 }
 
+.perm-group-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--primary);
+  margin-top: 6px;
+  margin-bottom: 4px;
+  padding-left: 4px;
+}
+
+.perm-menu {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+}
+
 .perm-checkbox {
   display: flex;
   align-items: center;

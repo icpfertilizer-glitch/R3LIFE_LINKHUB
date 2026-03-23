@@ -369,10 +369,37 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // === User Permission Management ===
+  // === User Management ===
   const userListEl = document.getElementById('user-list');
+  const addUserBtn = document.getElementById('add-user-btn');
+  const newUserEmail = document.getElementById('new-user-email');
+  const newUserName = document.getElementById('new-user-name');
   let allCategoriesForPerms = [];
   let allMenusForPerms = [];
+
+  // Add new user
+  addUserBtn.addEventListener('click', async () => {
+    const email = newUserEmail.value.trim();
+    if (!email) return;
+    const name = newUserName.value.trim();
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, name })
+    });
+    if (res.ok) {
+      newUserEmail.value = '';
+      newUserName.value = '';
+      loadUsers();
+    } else {
+      const err = await res.json();
+      alert(err.error || 'Error adding user');
+    }
+  });
+
+  newUserEmail.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addUserBtn.click(); }
+  });
 
   async function loadUsers() {
     const [usersRes, catsRes, menusRes] = await Promise.all([
@@ -385,11 +412,11 @@ document.addEventListener('DOMContentLoaded', () => {
     allMenusForPerms = await menusRes.json();
 
     if (users.length === 0) {
-      userListEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">ยังไม่มีผู้ใช้ที่เคย login</p>';
+      userListEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:20px;">ยังไม่มี user ที่ลงทะเบียน</p>';
       return;
     }
 
-    // Group menus by category for display
+    // Group menus by category
     const menusByCategory = {};
     const uncategorizedMenus = [];
     allMenusForPerms.forEach(m => {
@@ -405,9 +432,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     userListEl.innerHTML = users.map(user => {
       const totalPerms = user.categoryPermissions.length + user.menuPermissions.length;
+      const isApproved = !!user.is_approved;
+      const isAdmin = !!user.is_admin;
 
       let menusHtml = '';
-      // Render menus grouped by category
       allCategoriesForPerms.forEach(cat => {
         const catMenus = menusByCategory[cat.id];
         if (!catMenus || catMenus.length === 0) return;
@@ -422,7 +450,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
         menusHtml += `</div>`;
       });
-      // Uncategorized menus
       if (uncategorizedMenus.length > 0) {
         menusHtml += `<div class="perm-group-label">ไม่มีหมวดหมู่</div><div class="user-perm-checkboxes">`;
         menusHtml += uncategorizedMenus.map(m => {
@@ -440,14 +467,30 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="user-card" data-email="${escapeHtml(user.email)}">
           <div class="user-card-header">
             <div class="user-card-info">
-              <div class="user-card-name">${escapeHtml(user.name || 'Unknown')}</div>
+              <div class="user-card-name">
+                ${escapeHtml(user.name || 'Unknown')}
+                ${isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
+              </div>
               <div class="user-card-email">${escapeHtml(user.email)}</div>
-              <div class="user-card-login">Last login: ${user.last_login || '-'}</div>
+              <div class="user-card-login">Last login: ${user.last_login || 'ยังไม่เคย login'}</div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="deleteUser('${emailEsc(user.email)}')">Delete</button>
           </div>
 
-          <div class="user-perm-label">Categories (เห็นทั้ง category + ทุก menu ใน category)</div>
+          <div class="user-role-toggles">
+            <label class="perm-checkbox ${isApproved ? 'checked' : ''}">
+              <input type="checkbox" ${isApproved ? 'checked' : ''}
+                onchange="toggleApproved('${emailEsc(user.email)}', this.checked)">
+              Approved (อนุมัติเข้าใช้งาน)
+            </label>
+            <label class="perm-checkbox ${isAdmin ? 'checked' : ''}">
+              <input type="checkbox" ${isAdmin ? 'checked' : ''}
+                onchange="toggleAdmin('${emailEsc(user.email)}', this.checked)">
+              Admin (จัดการระบบได้)
+            </label>
+          </div>
+
+          <div class="user-perm-label" style="margin-top:12px;">Categories (เห็นทั้ง category + ทุก menu ใน category)</div>
           <div class="user-perm-checkboxes">
             ${allCategoriesForPerms.map(cat => {
               const checked = user.categoryPermissions.includes(cat.id);
@@ -463,12 +506,30 @@ document.addEventListener('DOMContentLoaded', () => {
           ${menusHtml}
 
           <div class="user-perm-status">
-            ${totalPerms === 0 ? 'ยังไม่มีสิทธิ์ (ไม่เห็นอะไร)' : `สิทธิ์: ${user.categoryPermissions.length} category, ${user.menuPermissions.length} menu`}
+            ${totalPerms === 0 ? 'ยังไม่มีสิทธิ์ดู content (ไม่เห็นอะไร)' : `สิทธิ์: ${user.categoryPermissions.length} category, ${user.menuPermissions.length} menu`}
           </div>
         </div>
       `;
     }).join('');
   }
+
+  window.toggleApproved = async (email, value) => {
+    await fetch(`/api/users/${encodeURIComponent(email)}/approve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_approved: value })
+    });
+    loadUsers();
+  };
+
+  window.toggleAdmin = async (email, value) => {
+    await fetch(`/api/users/${encodeURIComponent(email)}/admin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_admin: value })
+    });
+    loadUsers();
+  };
 
   window.updatePermission = async (email) => {
     const card = document.querySelector(`.user-card[data-email="${email}"]`);
@@ -479,7 +540,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const categoryIds = [...catCheckboxes].filter(cb => cb.checked).map(cb => parseInt(cb.value));
     const menuIds = [...menuCheckboxes].filter(cb => cb.checked).map(cb => parseInt(cb.value));
 
-    // Update visual state
     card.querySelectorAll('.perm-checkbox').forEach(label => {
       const cb = label.querySelector('input');
       label.classList.toggle('checked', cb.checked);
@@ -487,7 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const statusEl = card.querySelector('.user-perm-status');
     const total = categoryIds.length + menuIds.length;
-    statusEl.textContent = total === 0 ? 'ยังไม่มีสิทธิ์ (ไม่เห็นอะไร)' : `สิทธิ์: ${categoryIds.length} category, ${menuIds.length} menu`;
+    statusEl.textContent = total === 0 ? 'ยังไม่มีสิทธิ์ดู content (ไม่เห็นอะไร)' : `สิทธิ์: ${categoryIds.length} category, ${menuIds.length} menu`;
 
     await fetch(`/api/users/${encodeURIComponent(email)}/permissions`, {
       method: 'PUT',

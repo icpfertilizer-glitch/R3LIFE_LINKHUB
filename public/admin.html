@@ -111,8 +111,17 @@
       <!-- Tab: Users -->
       <div id="tab-users" class="tab-content">
         <div class="card">
+          <h2>Register New User</h2>
+          <p class="hint">เพิ่ม user ที่อนุญาตให้เข้าใช้งาน (ใส่ email Microsoft)</p>
+          <div class="category-add-row">
+            <input type="email" id="new-user-email" placeholder="user@company.com" class="category-input">
+            <input type="text" id="new-user-name" placeholder="ชื่อ (ไม่บังคับ)" class="category-input" style="max-width:200px;">
+            <button class="btn btn-primary btn-sm" id="add-user-btn">Add User</button>
+          </div>
+        </div>
+        <div class="card">
           <h2>User Permissions</h2>
-          <p class="hint">User ใหม่จะไม่เห็นอะไรจนกว่า admin จะกำหนดสิทธิ์ให้</p>
+          <p class="hint">User ต้องได้รับอนุมัติ (Approved) ก่อนถึงจะเข้าใช้งานได้</p>
           <div id="user-list" class="user-list">
             <!-- Users loaded dynamically -->
           </div>

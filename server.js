@@ -43,10 +43,15 @@ async function initDB() {
       email TEXT UNIQUE NOT NULL,
       name TEXT,
       tenant_id TEXT,
+      is_admin INTEGER DEFAULT 0,
+      is_approved INTEGER DEFAULT 0,
       last_login DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // Add new columns if not exists (for existing databases)
+  try { await db.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 0'); } catch(e) {}
   await db.execute(`
     CREATE TABLE IF NOT EXISTS user_permissions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,18 +183,38 @@ app.get('/auth/callback', async (req, res) => {
       return res.status(403).send('Access denied: your organization is not allowed.');
     }
 
+    // Check if user exists and is approved
+    const existingUser = await db.execute({
+      sql: 'SELECT * FROM users WHERE email = ?',
+      args: [account.username]
+    });
+
+    if (existingUser.rows.length === 0) {
+      // User not registered by admin — deny access
+      return res.sendFile(path.join(__dirname, 'public', 'denied.html'));
+    }
+
+    const user = existingUser.rows[0];
+    if (!user.is_approved) {
+      return res.sendFile(path.join(__dirname, 'public', 'denied.html'));
+    }
+
+    // Update user info on login
+    await db.execute({
+      sql: 'UPDATE users SET name = ?, tenant_id = ?, last_login = CURRENT_TIMESTAMP WHERE email = ?',
+      args: [account.name, account.tenantId, account.username]
+    });
+
     req.session.msUser = {
       name: account.name,
       email: account.username,
       tenantId: account.tenantId
     };
 
-    // Save/update user in database
-    await db.execute({
-      sql: `INSERT INTO users (email, name, tenant_id, last_login) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(email) DO UPDATE SET name = ?, tenant_id = ?, last_login = CURRENT_TIMESTAMP`,
-      args: [account.username, account.name, account.tenantId, account.name, account.tenantId]
-    });
+    // If user has admin role, auto-set admin session
+    if (user.is_admin) {
+      req.session.isAdmin = true;
+    }
 
     const returnTo = req.session.returnTo || '/';
     delete req.session.returnTo;
@@ -220,15 +245,23 @@ app.get('/api/ms-auth', (req, res) => {
   });
 });
 
-// --- Serve Pages (protected by Microsoft login) ---
+// --- Serve Pages ---
 
-// Public page - requires Microsoft login
-app.get('/', requireMsLogin, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Landing page or main page
+app.get('/', (req, res) => {
+  if (!msalEnabled) {
+    return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  }
+  // If logged in with Microsoft, show main page
+  if (req.session && req.session.msUser) {
+    return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  }
+  // Not logged in: show welcome/landing page
+  res.sendFile(path.join(__dirname, 'public', 'welcome.html'));
 });
 
-// Admin page - requires Microsoft login first
-app.get('/admin', requireMsLogin, (req, res) => {
+// Admin page
+app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
@@ -237,14 +270,25 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Admin API ---
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
+
+  // Master admin login
   if (username === ADMIN_USER && password === ADMIN_PASS) {
     req.session.isAdmin = true;
-    res.json({ success: true });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
+    return res.json({ success: true });
   }
+
+  // Check if MS user has admin role (login with email + password)
+  if (username && password) {
+    const user = await db.execute({ sql: 'SELECT * FROM users WHERE email = ? AND is_admin = 1', args: [username] });
+    if (user.rows.length > 0 && password === ADMIN_PASS) {
+      req.session.isAdmin = true;
+      return res.json({ success: true });
+    }
+  }
+
+  res.status(401).json({ error: 'Invalid credentials' });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -460,6 +504,41 @@ app.get('/api/users', requireAdmin, async (req, res) => {
     menuPermissions: menuPerms.rows.filter(p => p.user_email === u.email).map(p => p.menu_id)
   }));
   res.json(userList);
+});
+
+// Register new user (admin adds user by email)
+app.post('/api/users', requireAdmin, async (req, res) => {
+  const { email, name } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email is required' });
+
+  const existing = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email] });
+  if (existing.rows.length > 0) return res.status(409).json({ error: 'User already exists' });
+
+  await db.execute({
+    sql: 'INSERT INTO users (email, name, is_approved) VALUES (?, ?, 1)',
+    args: [email.toLowerCase(), name || '']
+  });
+
+  const user = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email.toLowerCase()] });
+  res.status(201).json(user.rows[0]);
+});
+
+// Toggle admin role
+app.put('/api/users/:email/admin', requireAdmin, async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const { is_admin } = req.body;
+
+  await db.execute({ sql: 'UPDATE users SET is_admin = ? WHERE email = ?', args: [is_admin ? 1 : 0, email] });
+  res.json({ success: true });
+});
+
+// Toggle approved status
+app.put('/api/users/:email/approve', requireAdmin, async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const { is_approved } = req.body;
+
+  await db.execute({ sql: 'UPDATE users SET is_approved = ? WHERE email = ?', args: [is_approved ? 1 : 0, email] });
+  res.json({ success: true });
 });
 
 // Set permissions for a user (replace all)

@@ -79,9 +79,9 @@ body {
 }
 
 .container {
-  max-width: 960px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 24px 16px;
+  padding: 24px 32px;
   flex: 1;
 }
 
@@ -151,23 +151,28 @@ body {
 /* === Menu Grid (Public) === */
 .menu-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 20px;
-  padding: 16px 0;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 24px;
+  padding: 20px 0;
+  justify-items: center;
 }
 
 .menu-item {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(33, 150, 243, 0.15);
   border-radius: var(--radius);
   overflow: hidden;
   text-decoration: none;
   color: var(--text);
-  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  transition: transform 0.25s, box-shadow 0.25s, border-color 0.25s;
   display: flex;
   flex-direction: column;
   align-items: center;
   cursor: pointer;
+  width: 100%;
+  max-width: 200px;
 }
 
 .menu-item:hover {
@@ -832,9 +837,17 @@ body {
 
 /* === Responsive === */
 @media (max-width: 600px) {
+  .container {
+    padding: 16px 12px;
+  }
+
   .menu-grid {
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
     gap: 12px;
+  }
+
+  .menu-item {
+    max-width: none;
   }
 
   .header .logo h1 {

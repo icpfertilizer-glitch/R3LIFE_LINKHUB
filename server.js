@@ -8,8 +8,17 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Data directory: use persistent disk path if available, otherwise local
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const dbDir = path.join(DATA_DIR, 'database');
+const uploadDir = path.join(DATA_DIR, 'uploads');
+
+// Ensure directories exist
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
 // Database setup
-const dbPath = path.join(__dirname, 'database', 'linkhub.db');
+const dbPath = path.join(dbDir, 'linkhub.db');
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 
@@ -44,7 +53,7 @@ try {
 
 // Multer setup
 const storage = multer.diskStorage({
-  destination: path.join(__dirname, 'uploads'),
+  destination: uploadDir,
   filename: (req, file, cb) => {
     const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, unique + path.extname(file.originalname));
@@ -65,7 +74,7 @@ const upload = multer({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(uploadDir));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'r3life-linkhub-secret-key-change-me',
   resave: false,

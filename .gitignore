@@ -2,3 +2,4 @@ node_modules/
 database/*.db
 uploads/*
 !uploads/.gitkeep
+.claude/settings.local.json

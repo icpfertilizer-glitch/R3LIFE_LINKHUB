@@ -130,17 +130,22 @@ body {
 }
 
 .user-info {
-  position: absolute;
-  right: 0;
-  top: 32px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 20px;
 }
 
 .user-name {
   font-size: 0.85rem;
-  color: var(--text-muted);
+  color: var(--text);
+  font-weight: 500;
 }
 
 /* === Menu Grid (Public) === */

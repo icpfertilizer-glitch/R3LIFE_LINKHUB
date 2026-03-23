@@ -9,11 +9,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Database setup: Turso cloud if URL is set, otherwise local file
+const isTurso = !!process.env.TURSO_DATABASE_URL;
 const db = createClient(
-  process.env.TURSO_DATABASE_URL
+  isTurso
     ? { url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN }
     : { url: 'file:database/linkhub.db' }
 );
+console.log(`Database: ${isTurso ? 'Turso Cloud (' + process.env.TURSO_DATABASE_URL + ')' : 'Local SQLite'}`);
 
 // Initialize database tables
 async function initDB() {

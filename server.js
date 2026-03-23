@@ -1,66 +1,46 @@
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Data directory: use persistent disk path if available, otherwise local
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-const dbDir = path.join(DATA_DIR, 'database');
-const uploadDir = path.join(DATA_DIR, 'uploads');
+// Database setup: Turso cloud if URL is set, otherwise local file
+const db = createClient(
+  process.env.TURSO_DATABASE_URL
+    ? { url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN }
+    : { url: 'file:database/linkhub.db' }
+);
 
-// Ensure directories exist
-if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// Database setup
-const dbPath = path.join(dbDir, 'linkhub.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    sort_order INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS menus (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    image TEXT,
-    category_id INTEGER,
-    sort_order INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-  )
-`);
-
-// Add category_id column if not exists (for existing databases)
-try {
-  db.exec('ALTER TABLE menus ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL');
-} catch (e) {
-  // Column already exists
+// Initialize database tables
+async function initDB() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS menus (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      image TEXT,
+      category_id INTEGER,
+      sort_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+    )
+  `);
 }
 
-// Multer setup
-const storage = multer.diskStorage({
-  destination: uploadDir,
-  filename: (req, file, cb) => {
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, unique + path.extname(file.originalname));
-  }
-});
+// Multer: memory storage (no disk writes, convert to base64)
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
     const allowed = /jpeg|jpg|png|gif|webp|svg/;
     const ext = allowed.test(path.extname(file.originalname).toLowerCase());
@@ -74,7 +54,6 @@ const upload = multer({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(uploadDir));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'r3life-linkhub-secret-key-change-me',
   resave: false,
@@ -82,7 +61,7 @@ app.use(session({
   cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
-// Admin credentials (change these)
+// Admin credentials
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
 
@@ -90,6 +69,13 @@ const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
 function requireAuth(req, res, next) {
   if (req.session && req.session.isAdmin) return next();
   res.status(401).json({ error: 'Unauthorized' });
+}
+
+// Convert uploaded file buffer to base64 data URI
+function fileToBase64(file) {
+  if (!file) return null;
+  const base64 = file.buffer.toString('base64');
+  return `data:${file.mimetype};base64,${base64}`;
 }
 
 // --- API Routes ---
@@ -118,149 +104,124 @@ app.get('/api/auth', (req, res) => {
 
 // --- Category API ---
 
-// Get all categories
-app.get('/api/categories', (req, res) => {
-  const categories = db.prepare('SELECT * FROM categories ORDER BY sort_order ASC, id ASC').all();
-  res.json(categories);
+app.get('/api/categories', async (req, res) => {
+  const result = await db.execute('SELECT * FROM categories ORDER BY sort_order ASC, id ASC');
+  res.json(result.rows);
 });
 
-// Add category
-app.post('/api/categories', requireAuth, (req, res) => {
+app.post('/api/categories', requireAuth, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Name is required' });
 
-  const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM categories').get();
-  const sortOrder = (maxOrder.max || 0) + 1;
+  const maxOrder = await db.execute('SELECT MAX(sort_order) as max FROM categories');
+  const sortOrder = (maxOrder.rows[0].max || 0) + 1;
 
-  const result = db.prepare('INSERT INTO categories (name, sort_order) VALUES (?, ?)')
-    .run(name, sortOrder);
-  const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(category);
+  const result = await db.execute({
+    sql: 'INSERT INTO categories (name, sort_order) VALUES (?, ?)',
+    args: [name, sortOrder]
+  });
+  const category = await db.execute({ sql: 'SELECT * FROM categories WHERE id = ?', args: [result.lastInsertRowid] });
+  res.status(201).json(category.rows[0]);
 });
 
-// Update category
-app.put('/api/categories/:id', requireAuth, (req, res) => {
-  const { id } = req.params;
-  const { name } = req.body;
-  const existing = db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ error: 'Category not found' });
-
-  db.prepare('UPDATE categories SET name = ? WHERE id = ?').run(name || existing.name, id);
-  const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
-  res.json(category);
-});
-
-// Reorder categories
-app.put('/api/categories/reorder', requireAuth, (req, res) => {
+app.put('/api/categories/reorder', requireAuth, async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'Order must be an array' });
 
-  const update = db.prepare('UPDATE categories SET sort_order = ? WHERE id = ?');
-  const reorder = db.transaction((ids) => {
-    ids.forEach((id, index) => update.run(index + 1, id));
-  });
-  reorder(order);
+  for (let i = 0; i < order.length; i++) {
+    await db.execute({ sql: 'UPDATE categories SET sort_order = ? WHERE id = ?', args: [i + 1, order[i]] });
+  }
   res.json({ success: true });
 });
 
-// Delete category
-app.delete('/api/categories/:id', requireAuth, (req, res) => {
+app.put('/api/categories/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ error: 'Category not found' });
+  const { name } = req.body;
+  const existing = await db.execute({ sql: 'SELECT * FROM categories WHERE id = ?', args: [id] });
+  if (existing.rows.length === 0) return res.status(404).json({ error: 'Category not found' });
 
-  // Set menus in this category to uncategorized
-  db.prepare('UPDATE menus SET category_id = NULL WHERE category_id = ?').run(id);
-  db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+  await db.execute({ sql: 'UPDATE categories SET name = ? WHERE id = ?', args: [name || existing.rows[0].name, id] });
+  const category = await db.execute({ sql: 'SELECT * FROM categories WHERE id = ?', args: [id] });
+  res.json(category.rows[0]);
+});
+
+app.delete('/api/categories/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const existing = await db.execute({ sql: 'SELECT * FROM categories WHERE id = ?', args: [id] });
+  if (existing.rows.length === 0) return res.status(404).json({ error: 'Category not found' });
+
+  await db.execute({ sql: 'UPDATE menus SET category_id = NULL WHERE category_id = ?', args: [id] });
+  await db.execute({ sql: 'DELETE FROM categories WHERE id = ?', args: [id] });
   res.json({ success: true });
 });
 
 // --- Menu API ---
 
-// Get all menus (with category info)
-app.get('/api/menus', (req, res) => {
-  const menus = db.prepare(`
+app.get('/api/menus', async (req, res) => {
+  const result = await db.execute(`
     SELECT menus.*, categories.name as category_name
     FROM menus
     LEFT JOIN categories ON menus.category_id = categories.id
     ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC
-  `).all();
-  res.json(menus);
+  `);
+  res.json(result.rows);
 });
 
-// Add menu
-app.post('/api/menus', requireAuth, upload.single('image'), (req, res) => {
+app.post('/api/menus', requireAuth, upload.single('image'), async (req, res) => {
   const { name, url, category_id } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
 
-  const image = req.file ? '/uploads/' + req.file.filename : null;
+  const image = fileToBase64(req.file);
   const catId = category_id && category_id !== '' ? parseInt(category_id) : null;
-  const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM menus').get();
-  const sortOrder = (maxOrder.max || 0) + 1;
+  const maxOrder = await db.execute('SELECT MAX(sort_order) as max FROM menus');
+  const sortOrder = (maxOrder.rows[0].max || 0) + 1;
 
-  const result = db.prepare('INSERT INTO menus (name, url, image, category_id, sort_order) VALUES (?, ?, ?, ?, ?)')
-    .run(name, url, image, catId, sortOrder);
+  const result = await db.execute({
+    sql: 'INSERT INTO menus (name, url, image, category_id, sort_order) VALUES (?, ?, ?, ?, ?)',
+    args: [name, url, image, catId, sortOrder]
+  });
 
-  const menu = db.prepare('SELECT * FROM menus WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(menu);
+  const menu = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [result.lastInsertRowid] });
+  res.status(201).json(menu.rows[0]);
 });
 
-// Reorder menus (must be before :id route)
-app.put('/api/menus/reorder', requireAuth, (req, res) => {
-  const { order } = req.body; // array of ids in new order
+app.put('/api/menus/reorder', requireAuth, async (req, res) => {
+  const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'Order must be an array' });
 
-  const update = db.prepare('UPDATE menus SET sort_order = ? WHERE id = ?');
-  const reorder = db.transaction((ids) => {
-    ids.forEach((id, index) => update.run(index + 1, id));
-  });
-  reorder(order);
-
+  for (let i = 0; i < order.length; i++) {
+    await db.execute({ sql: 'UPDATE menus SET sort_order = ? WHERE id = ?', args: [i + 1, order[i]] });
+  }
   res.json({ success: true });
 });
 
-// Update menu
-app.put('/api/menus/:id', requireAuth, upload.single('image'), (req, res) => {
+app.put('/api/menus/:id', requireAuth, upload.single('image'), async (req, res) => {
   const { id } = req.params;
-  const { name, url } = req.body;
-  const existing = db.prepare('SELECT * FROM menus WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ error: 'Menu not found' });
+  const { name, url, category_id } = req.body;
+  const existing = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [id] });
+  if (existing.rows.length === 0) return res.status(404).json({ error: 'Menu not found' });
 
-  const { category_id } = req.body;
-  let image = existing.image;
-  if (req.file) {
-    // Delete old image
-    if (existing.image) {
-      const oldPath = path.join(__dirname, existing.image);
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-    }
-    image = '/uploads/' + req.file.filename;
-  }
-
+  const row = existing.rows[0];
+  const image = req.file ? fileToBase64(req.file) : row.image;
   const catId = category_id !== undefined
     ? (category_id && category_id !== '' ? parseInt(category_id) : null)
-    : existing.category_id;
+    : row.category_id;
 
-  db.prepare('UPDATE menus SET name = ?, url = ?, image = ?, category_id = ? WHERE id = ?')
-    .run(name || existing.name, url || existing.url, image, catId, id);
+  await db.execute({
+    sql: 'UPDATE menus SET name = ?, url = ?, image = ?, category_id = ? WHERE id = ?',
+    args: [name || row.name, url || row.url, image, catId, id]
+  });
 
-  const menu = db.prepare('SELECT * FROM menus WHERE id = ?').get(id);
-  res.json(menu);
+  const menu = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [id] });
+  res.json(menu.rows[0]);
 });
 
-// Delete menu
-app.delete('/api/menus/:id', requireAuth, (req, res) => {
+app.delete('/api/menus/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM menus WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ error: 'Menu not found' });
+  const existing = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [id] });
+  if (existing.rows.length === 0) return res.status(404).json({ error: 'Menu not found' });
 
-  // Delete image file
-  if (existing.image) {
-    const imgPath = path.join(__dirname, existing.image);
-    if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
-  }
-
-  db.prepare('DELETE FROM menus WHERE id = ?').run(id);
+  await db.execute({ sql: 'DELETE FROM menus WHERE id = ?', args: [id] });
   res.json({ success: true });
 });
 
@@ -269,6 +230,12 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+// Start server after DB init
+initDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });

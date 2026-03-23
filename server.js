@@ -135,6 +135,11 @@ const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
 function requireMsLogin(req, res, next) {
   if (!msalEnabled) return next(); // skip if Azure not configured
   if (req.session && req.session.msUser) return next();
+  if (req.session && req.session.isAdmin) return next(); // admin bypasses MS login
+  // For API calls, return 401 instead of redirect (prevents CORS issues)
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
   // Save the original URL to redirect back after login
   req.session.returnTo = req.originalUrl;
   res.redirect('/auth/login');

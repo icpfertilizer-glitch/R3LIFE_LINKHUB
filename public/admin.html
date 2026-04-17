@@ -84,10 +84,15 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="menu-image">Image</label>
-              <div class="file-input-wrapper">
-                <input type="file" id="menu-image" accept="image/*">
-                <div id="image-preview" class="image-preview"></div>
+              <label>Icon</label>
+              <div class="icon-selector">
+                <div id="icon-preview" class="icon-preview-box" title="คลิกเพื่อเลือก icon">
+                  <span style="color:var(--text-muted);font-size:0.8rem;">คลิกเลือก</span>
+                </div>
+                <button type="button" class="btn btn-outline btn-sm" id="pick-icon-btn">เลือก Icon</button>
+                <button type="button" class="btn btn-outline btn-sm" id="clear-icon-btn" style="display:none;">ลบ Icon</button>
+                <input type="hidden" id="menu-icon-type">
+                <input type="hidden" id="menu-icon-value">
               </div>
             </div>
           </div>
@@ -130,6 +135,7 @@
     </div>
   </div>
 
+  <script src="/js/emoji-picker.js"></script>
   <script src="/js/admin.js"></script>
   <script src="/js/bg.js"></script>
 </body>

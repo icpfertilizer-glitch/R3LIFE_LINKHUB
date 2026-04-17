@@ -33,12 +33,17 @@ async function initDB() {
       name TEXT NOT NULL,
       url TEXT NOT NULL,
       image TEXT,
+      icon_type TEXT DEFAULT NULL,
+      icon_value TEXT DEFAULT NULL,
       category_id INTEGER,
       sort_order INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
     )
   `);
+  // Add icon columns if not exists (for existing databases)
+  try { await db.execute('ALTER TABLE menus ADD COLUMN icon_type TEXT DEFAULT NULL'); } catch(e) {}
+  try { await db.execute('ALTER TABLE menus ADD COLUMN icon_value TEXT DEFAULT NULL'); } catch(e) {}
   await db.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -406,11 +411,14 @@ app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
 
 // --- Menu API (read: MS auth, write: admin) ---
 
+// Light menu columns (exclude heavy base64 image for fast loading)
+const MENU_COLS_LIGHT = 'menus.id, menus.name, menus.url, menus.icon_type, menus.icon_value, menus.category_id, menus.sort_order, menus.created_at';
+
 app.get('/api/menus', requireMsLogin, async (req, res) => {
   const perms = await getUserPermissions(req);
   if (perms.all) {
     const result = await db.execute(`
-      SELECT menus.*, categories.name as category_name
+      SELECT ${MENU_COLS_LIGHT}, categories.name as category_name
       FROM menus
       LEFT JOIN categories ON menus.category_id = categories.id
       ORDER BY categories.sort_order ASC, menus.sort_order ASC, menus.id ASC
@@ -420,7 +428,6 @@ app.get('/api/menus', requireMsLogin, async (req, res) => {
 
   if (perms.categoryIds.length === 0 && perms.menuIds.length === 0) return res.json([]);
 
-  // Build WHERE clause: category_id IN (...) OR menus.id IN (...)
   const conditions = [];
   const args = [];
 
@@ -434,7 +441,7 @@ app.get('/api/menus', requireMsLogin, async (req, res) => {
   }
 
   const result = await db.execute({
-    sql: `SELECT menus.*, categories.name as category_name
+    sql: `SELECT ${MENU_COLS_LIGHT}, categories.name as category_name
           FROM menus
           LEFT JOIN categories ON menus.category_id = categories.id
           WHERE ${conditions.join(' OR ')}
@@ -445,20 +452,30 @@ app.get('/api/menus', requireMsLogin, async (req, res) => {
 });
 
 app.post('/api/menus', requireAdmin, upload.single('image'), async (req, res) => {
-  const { name, url, category_id } = req.body;
+  const { name, url, category_id, icon_type, icon_value } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
 
-  const image = fileToBase64(req.file);
+  // Support new icon system (emoji/url) or legacy image upload
+  let finalIconType = icon_type || null;
+  let finalIconValue = icon_value || null;
+  let image = null;
+
+  if (req.file) {
+    image = fileToBase64(req.file);
+    finalIconType = 'image';
+    finalIconValue = null; // stored in image column
+  }
+
   const catId = category_id && category_id !== '' ? parseInt(category_id) : null;
   const maxOrder = await db.execute('SELECT MAX(sort_order) as max FROM menus');
   const sortOrder = (maxOrder.rows[0].max || 0) + 1;
 
   const result = await db.execute({
-    sql: 'INSERT INTO menus (name, url, image, category_id, sort_order) VALUES (?, ?, ?, ?, ?)',
-    args: [name, url, image, catId, sortOrder]
+    sql: 'INSERT INTO menus (name, url, image, icon_type, icon_value, category_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    args: [name, url, image, finalIconType, finalIconValue, catId, sortOrder]
   });
 
-  const menu = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [result.lastInsertRowid] });
+  const menu = await db.execute({ sql: `SELECT ${MENU_COLS_LIGHT} FROM menus WHERE id = ?`, args: [result.lastInsertRowid] });
   res.status(201).json(menu.rows[0]);
 });
 
@@ -474,22 +491,33 @@ app.put('/api/menus/reorder', requireAdmin, async (req, res) => {
 
 app.put('/api/menus/:id', requireAdmin, upload.single('image'), async (req, res) => {
   const { id } = req.params;
-  const { name, url, category_id } = req.body;
+  const { name, url, category_id, icon_type, icon_value } = req.body;
   const existing = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [id] });
   if (existing.rows.length === 0) return res.status(404).json({ error: 'Menu not found' });
 
   const row = existing.rows[0];
-  const image = req.file ? fileToBase64(req.file) : row.image;
+  let image = row.image;
+  let finalIconType = icon_type !== undefined ? icon_type : row.icon_type;
+  let finalIconValue = icon_value !== undefined ? icon_value : row.icon_value;
+
+  if (req.file) {
+    image = fileToBase64(req.file);
+    finalIconType = 'image';
+    finalIconValue = null;
+  } else if (icon_type === 'emoji' || icon_type === 'url') {
+    image = null; // clear old base64
+  }
+
   const catId = category_id !== undefined
     ? (category_id && category_id !== '' ? parseInt(category_id) : null)
     : row.category_id;
 
   await db.execute({
-    sql: 'UPDATE menus SET name = ?, url = ?, image = ?, category_id = ? WHERE id = ?',
-    args: [name || row.name, url || row.url, image, catId, id]
+    sql: 'UPDATE menus SET name = ?, url = ?, image = ?, icon_type = ?, icon_value = ?, category_id = ? WHERE id = ?',
+    args: [name || row.name, url || row.url, image, finalIconType, finalIconValue, catId, id]
   });
 
-  const menu = await db.execute({ sql: 'SELECT * FROM menus WHERE id = ?', args: [id] });
+  const menu = await db.execute({ sql: `SELECT ${MENU_COLS_LIGHT} FROM menus WHERE id = ?`, args: [id] });
   res.json(menu.rows[0]);
 });
 

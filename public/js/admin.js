@@ -11,9 +11,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const editId = document.getElementById('edit-id');
   const menuName = document.getElementById('menu-name');
   const menuUrl = document.getElementById('menu-url');
-  const menuImage = document.getElementById('menu-image');
   const menuCategory = document.getElementById('menu-category');
-  const imagePreview = document.getElementById('image-preview');
+  const iconPreview = document.getElementById('icon-preview');
+  const pickIconBtn = document.getElementById('pick-icon-btn');
+  const clearIconBtn = document.getElementById('clear-icon-btn');
+  const menuIconType = document.getElementById('menu-icon-type');
+  const menuIconValue = document.getElementById('menu-icon-value');
   const menuList = document.getElementById('admin-menu-list');
   const categoryNameInput = document.getElementById('category-name');
   const addCategoryBtn = document.getElementById('add-category-btn');
@@ -201,34 +204,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // === Menu Management ===
 
-  // Image preview
-  menuImage.addEventListener('change', () => {
-    const file = menuImage.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        imagePreview.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
-      };
-      reader.readAsDataURL(file);
+  // Icon picker
+  function setIconPreview(type, value) {
+    menuIconType.value = type || '';
+    menuIconValue.value = value || '';
+    if (type && value) {
+      iconPreview.innerHTML = EmojiPicker.renderIcon(type, value, 40);
+      clearIconBtn.style.display = '';
+    } else {
+      iconPreview.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">คลิกเลือก</span>';
+      clearIconBtn.style.display = 'none';
     }
+  }
+
+  pickIconBtn.addEventListener('click', () => {
+    EmojiPicker.open((result) => {
+      setIconPreview(result.type, result.value);
+    });
+  });
+  iconPreview.addEventListener('click', () => pickIconBtn.click());
+
+  clearIconBtn.addEventListener('click', () => {
+    setIconPreview(null, null);
   });
 
   // Submit form (add or edit)
   menuForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const formData = new FormData();
-    formData.append('name', menuName.value);
-    formData.append('url', menuUrl.value);
-    formData.append('category_id', menuCategory.value);
-    if (menuImage.files[0]) {
-      formData.append('image', menuImage.files[0]);
-    }
+    const body = {
+      name: menuName.value,
+      url: menuUrl.value,
+      category_id: menuCategory.value,
+      icon_type: menuIconType.value || null,
+      icon_value: menuIconValue.value || null
+    };
 
     const id = editId.value;
     const url = id ? `/api/menus/${id}` : '/api/menus';
     const method = id ? 'PUT' : 'POST';
 
-    const res = await fetch(url, { method, body: formData });
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
     if (res.ok) {
       resetForm();
       loadMenus();
@@ -242,8 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
     menuName.value = '';
     menuUrl.value = '';
     menuCategory.value = '';
-    menuImage.value = '';
-    imagePreview.innerHTML = '';
+    setIconPreview(null, null);
     formTitle.textContent = 'Add New Menu';
     submitBtn.textContent = 'Add Menu';
     cancelBtn.style.display = 'none';
@@ -262,10 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
           </svg>
         </div>
-        ${menu.image
-          ? `<img class="admin-menu-thumb" src="${escapeHtml(menu.image)}" alt="">`
-          : `<div class="admin-menu-thumb"></div>`
-        }
+        <div class="admin-menu-thumb">${EmojiPicker.renderIcon(menu.icon_type, menu.icon_value, 36)}</div>
         <div class="admin-menu-info">
           <div class="name">${escapeHtml(menu.name)}</div>
           <div class="url">${escapeHtml(menu.url)}</div>
@@ -291,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
     menuName.value = menu.name;
     menuUrl.value = menu.url;
     menuCategory.value = menu.category_id || '';
-    imagePreview.innerHTML = menu.image ? `<img src="${menu.image}" alt="Current">` : '';
+    setIconPreview(menu.icon_type, menu.icon_value);
     formTitle.textContent = 'Edit Menu';
     submitBtn.textContent = 'Update Menu';
     cancelBtn.style.display = 'inline-block';
